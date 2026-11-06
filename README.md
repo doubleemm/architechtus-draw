@@ -42,10 +42,21 @@ A self-hosted Access app (`domain: draw.architechtus.eu`, 24h sessions) with a p
 
 `VITE_APP_LIBRARY_URL` / `VITE_APP_LIBRARY_BACKEND` keep the upstream defaults (community stencils, read-only).
 
+## Documentation
+
+| Doc | What it covers |
+| --- | --- |
+| [`docs/architecture.md`](docs/architecture.md) | System diagram, request flow, build pipeline, component inventory, why-this-shape |
+| [`docs/setup.md`](docs/setup.md) | From-scratch setup: build, deploy, Access app, verification, fresh-clone reproduction |
+| [`docs/components.md`](docs/components.md) | Field-by-field breakdown of `wrangler.jsonc`, `build.sh`, the bundle, and the Access objects |
+| [`docs/operations.md`](docs/operations.md) | Rebuild/redeploy, updating Excalidraw, changing access, service tokens, troubleshooting |
+| [`docs/security.md`](docs/security.md) | Threat model, single ingress, exfiltration checks, service-token hygiene |
+
 ## Layout
 
 ```
 wrangler.jsonc  # static assets, SPA fallback, custom domain route, workers_dev: false
+build.sh        # reproducible bundle build (pinned excalidraw commit)
 build/          # generated bundle (gitignored, produced by build.sh)
-build.sh        # reproducible bundle build
+docs/           # architecture, setup, components, operations, security
 ```
