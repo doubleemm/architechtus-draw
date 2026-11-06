@@ -8,9 +8,10 @@ Security model for `draw.architechtus.eu`.
 | --- | --- | --- |
 | The whiteboard itself | Public, anonymous access | Cloudflare Access login required before any content is served |
 | Drawing data | Exfiltration to third parties (excalidraw.com) | All data-sending endpoints compiled out at build time |
+| Saved diagrams (R2) | Anonymous or cross-app access to stored diagrams | `/api/diagrams*` is behind the same Access app; no public route exists |
 | The origin | Direct access bypassing Access | Single ingress (custom domain only); no `*.workers.dev` route |
 | Machine automation | Token sprawl / leaked credentials | Service tokens are optional, minimal, and rotatable |
-| Upstream supply chain | Reproducibility / tampering | Bundle built from a pinned `excalidraw/excalidraw` commit |
+| Upstream supply chain | Reproducibility / tampering | Bundle built from a pinned `excalidraw/excalidraw` commit + a reviewed patch file |
 
 ## Single ingress
 
@@ -21,7 +22,8 @@ Security model for `draw.architechtus.eu`.
   could be used to bypass the login.
 - `not_found_handling: single-page-application` returns `index.html` for unknown paths;
   it does **not** weaken anything because Access sits in front of every path on the
-  hostname (including `/assets/*` and deep SPA routes).
+  hostname (including `/assets/*`, deep SPA routes, and the `/api/diagrams*` storage
+  API — verified: an unauthenticated request to `/api/diagrams` is `302`-redirected).
 
 ## Access enforcement
 
@@ -76,13 +78,26 @@ then be unavailable).
   never commit `client_secret` to the repo. Deleting a token while a policy still
   references it fails (`service_token_in_use`) — remove the policy first.
 
+## R2 diagram data
+
+- Diagrams saved via the menu are stored in the `architechtus-draw-diagrams` bucket as
+  plain JSON (images embedded as data URLs). The R2 API is same-origin and
+  Access-protected; R2 itself is Cloudflare-managed storage (encryption at rest by
+  default).
+- Anyone allowed in by Access (email allow-list, or any service token attached to the
+  app) can list, read, and delete **all** saved diagrams — there is no per-diagram
+  ACL. That is acceptable for the current single-user deployment; if multiple users are
+  added later, add per-identity name namespacing (e.g., prefix keys with the user).
+- Service tokens attached to this app can read/write the bucket via the API too — keep
+  them minimal and short-lived (see hygiene notes above).
+
 ## What this does **not** provide
 
 - **No transport-level hardening beyond Cloudflare defaults** (TLS, HTTP/2, HSTS) —
   review the zone settings if you need stronger HSTS / TLS min version / CSP headers.
 - **No CSP / SRI** on the JS bundle (self-hosted but not content-hashed).
-- **No per-user isolation** — it is a single-user deployment; everyone allowed in sees
-  the same app instance (each browser keeps its own drawings locally).
+- **No per-diagram isolation or audit of diagram access** — it is a single-user
+  deployment; everyone allowed in sees the same app and the same R2 diagram list.
 - **No audit log beyond Access's own activity logs** for per-request history.
 
 ## Reproducibility / supply chain

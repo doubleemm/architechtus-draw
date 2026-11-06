@@ -27,6 +27,9 @@ The upstream image tracks `master`, but this repo pins a commit for reproducibil
    ./build.sh
    grep -cE "json\.excalidraw\.com|oss-collab|oss-ai|AIzaSy" build/assets/*.js   # expect 0
    ```
+   If the R2 patch no longer applies, `build.sh` stops with a clear error — re-run
+   [patch regeneration](./components.md#patchexcalidraw-app-r2-storagepatch) against the
+   new source before deploying.
 4. Deploy, then re-run the checks from [setup.md — Step 4](./setup.md#step-4--verify).
 
 > If upstream changed the build env contract (new `VITE_APP_*` variables), review
@@ -78,6 +81,34 @@ Removal: delete the policy first, wait ~20 s for propagation, then delete the to
 account-level credentials that can bypass the email allow-list for the apps they're
 attached to.
 
+## R2 diagram storage
+
+Saved diagrams live in the R2 bucket `architechtus-draw-diagrams` (binding `DIAGRAMS`),
+one object per diagram, keyed by the name typed in the app. The API is
+`/api/diagrams` on the same origin (Access-protected like everything else).
+
+```bash
+# List (names, modified time, size)
+curl -s -H "CF-Access-Client-Id: $CID" -H "CF-Access-Client-Secret: $CSEC" \
+  https://draw.architechtus.eu/api/diagrams
+
+# Download a diagram to inspect/back it up (it's a .excalidraw-style JSON document)
+curl -s -H "CF-Access-Client-Id: $CID" -H "CF-Access-Client-Secret: $CSEC" \
+  https://draw.architechtus.eu/api/diagrams/<name> -o <name>.excalidraw
+
+# Restore from a backup
+curl -s -X PUT -H "Content-Type: application/vnd.excalidraw+json" \
+  -H "CF-Access-Client-Id: $CID" -H "CF-Access-Client-Secret: $CSEC" \
+  --data-binary @<name>.excalidraw https://draw.architechtus.eu/api/diagrams/<name>
+```
+
+- Names: `^[a-zA-Z0-9._-]{1,100}$`; saves over 25 MiB are rejected (`413`).
+- Images are embedded in the JSON (data URLs), so each diagram is a single self-contained
+  object — there are no separate file blobs to manage.
+- Delete from the app dialog, or `DELETE /api/diagrams/<name>`.
+- To back up the whole bucket, `wrangler r2 object get` per key, or use R2's
+  bucket-level copy/lifecycle in the dashboard.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -91,6 +122,10 @@ attached to.
 | Access login loop after policy change | Policy propagation (typically < 60 s) | Wait and retry; clear the `CF_Authorization` cookie |
 | Deploy succeeds but page is blank | Stale service worker / cached `index.html` | `cache-control: public, max-age=0, must-revalidate` is set; do a hard reload |
 | `build.sh` fails with a lockfile mismatch | Source clone not at the pinned commit | Delete `$EXCALIDRAW_SRC` and let `build.sh` re-clone; or check out `701b901a` manually |
+| `build.sh` fails with "R2 storage patch does not apply cleanly" | Upstream changed one of the four patched files after a version bump | Regenerate `patch/excalidraw-app-r2-storage.patch` (see [components.md](./components.md#patchexcalidraw-app-r2-storagepatch)) |
+| Save to R2… fails with `R2 storage request failed (401/403)` | Access session expired / not signed in | Re-login through Access; the API is protected by the same session as the page |
+| Save to R2… fails with `413 RequestTooLargeError` | Diagram (with embedded images) exceeds 25 MiB | Split the diagram or remove/reduce embedded images |
+| Saved diagram won't open / list is empty | Bucket empty or wrong bucket bound | Check the R2 binding in `wrangler.jsonc` (`architechtus-draw-diagrams`) and the object list via `wrangler r2 object list` |
 
 ## Sandbox / image reset recovery
 
@@ -112,9 +147,12 @@ the repo) and survive resets. Verify with the Step-4 checks in
 
 ## Backups & data
 
-- There is **no server-side data** — no database, no object storage.
-- Drawings autosave to the browser (IndexedDB) and can be exported as `.excalidraw`
-  files, PNG, or SVG from the app menu.
-- Clearing browser storage deletes local drawings — export important diagrams. This is
-  by design for a stateless single-user deployment; if persistence is needed later,
-  add an R2-backed autosave (out of scope for now).
+- **R2 (server-side)**: diagrams saved via the **Save to R2…** menu live in the
+  `architechtus-draw-diagrams` bucket, one object per diagram with images embedded.
+  These survive browser and container resets. Back them up occasionally via the
+  `wrangler r2 object get` / `PUT /api/diagrams/<name>` flow above.
+- **Browser (local)**: drawings that were never saved to R2 autosave only in the
+  browser's IndexedDB and can be exported as `.excalidraw` / PNG / SVG from the app menu.
+  Clearing browser storage deletes local drawings — export or save-to-R2 important ones.
+- **Container**: this repo and its build are recoverable from git; the Access app and R2
+  bucket are account state and survive resets.

@@ -6,11 +6,17 @@
 # time so the app never talks to excalidraw's servers (no sharing/collab/AI/
 # Firebase/Plus). Library stencils URLs are kept at the upstream defaults,
 # matching the official image.
+#
+# A small patch (patch/excalidraw-app-r2-storage.patch) is applied on top of the
+# pinned source to add the "Save to R2… / Open from R2…" main-menu feature backed
+# by the worker's R2 API. Keep the patch in sync with upstream updates.
 set -euo pipefail
 
 EXCALIDRAW_COMMIT="701b901a0f1ba3d0b390d9cdf63d112e25abac4b"
 SRC_DIR="${EXCALIDRAW_SRC:-/workspace/excalidraw}"
 OUT_DIR="$(cd "$(dirname "$0")" && pwd)/build"
+PATCH_DIR="$(cd "$(dirname "$0")" && pwd)/patch"
+R2_STORAGE_PATCH="$PATCH_DIR/excalidraw-app-r2-storage.patch"
 
 if [ ! -d "$SRC_DIR/.git" ]; then
   echo "Cloning excalidraw at $EXCALIDRAW_COMMIT ..."
@@ -23,6 +29,18 @@ if [ "$CURRENT" != "$EXCALIDRAW_COMMIT" ]; then
   echo "Updating excalidraw to pinned commit $EXCALIDRAW_COMMIT (was $CURRENT)..."
   git fetch --depth 1 origin "$EXCALIDRAW_COMMIT"
   git checkout "$EXCALIDRAW_COMMIT"
+fi
+
+echo "Applying R2 storage patch ..."
+if ! git apply --check "$R2_STORAGE_PATCH"; then
+  if git apply --reverse --check "$R2_STORAGE_PATCH"; then
+    echo "Patch already applied; skipping."
+  else
+    echo "ERROR: R2 storage patch does not apply cleanly." >&2
+    exit 1
+  fi
+else
+  git apply "$R2_STORAGE_PATCH"
 fi
 
 echo "Installing dependencies ..."

@@ -1,0 +1,420 @@
+diff --git a/excalidraw-app/App.tsx b/excalidraw-app/App.tsx
+index 543bf05..f71a2dc 100644
+--- a/excalidraw-app/App.tsx
++++ b/excalidraw-app/App.tsx
+@@ -101,6 +101,7 @@ import Collab, {
+ } from "./collab/Collab";
+ import { AppFooter } from "./components/AppFooter";
+ import { AppMainMenu } from "./components/AppMainMenu";
++import { R2StorageDialog } from "./components/R2StorageDialog";
+ import { AppWelcomeScreen } from "./components/AppWelcomeScreen";
+ import {
+   ExportToExcalidrawPlus,
+@@ -1108,6 +1109,8 @@ const ExcalidrawWrapper = () => {
+           }}
+         />
+ 
++        <R2StorageDialog />
++
+         <AppSidebar />
+ 
+         {errorMessage && (
+diff --git a/excalidraw-app/components/AppMainMenu.tsx b/excalidraw-app/components/AppMainMenu.tsx
+index 8bfae2d..89c3928 100644
+--- a/excalidraw-app/components/AppMainMenu.tsx
++++ b/excalidraw-app/components/AppMainMenu.tsx
+@@ -2,6 +2,8 @@ import {
+   loginIcon,
+   ExcalLogo,
+   eyeIcon,
++  ExportIcon,
++  LoadIcon,
+ } from "@excalidraw/excalidraw/components/icons";
+ import { useI18n } from "@excalidraw/excalidraw/i18n";
+ import { MainMenu } from "@excalidraw/excalidraw/index";
+@@ -12,9 +14,11 @@ import { isDevEnv } from "@excalidraw/common";
+ import type { Theme } from "@excalidraw/element/types";
+ 
+ import { LanguageList } from "../app-language/LanguageList";
++import { useSetAtom } from "../app-jotai";
+ import { isExcalidrawPlusSignedUser } from "../app_constants";
+ 
+ import { saveDebugState } from "./DebugCanvas";
++import { r2StorageDialogAtom } from "./R2StorageDialog";
+ 
+ export const AppMainMenu: React.FC<{
+   onCollabDialogOpen: () => any;
+@@ -24,12 +28,27 @@ export const AppMainMenu: React.FC<{
+   refresh: () => void;
+ }> = React.memo((props) => {
+   const { t } = useI18n();
++  const setR2StorageDialog = useSetAtom(r2StorageDialogAtom);
+   return (
+     <MainMenu>
+       <MainMenu.DefaultItems.LoadScene />
+       <MainMenu.DefaultItems.SaveToActiveFile />
+       <MainMenu.DefaultItems.Export />
+       <MainMenu.DefaultItems.SaveAsImage />
++      <MainMenu.Separator />
++      <MainMenu.Item
++        icon={ExportIcon}
++        onSelect={() => setR2StorageDialog({ isOpen: true, mode: "save" })}
++      >
++        Save to R2…
++      </MainMenu.Item>
++      <MainMenu.Item
++        icon={LoadIcon}
++        onSelect={() => setR2StorageDialog({ isOpen: true, mode: "open" })}
++      >
++        Open from R2…
++      </MainMenu.Item>
++      <MainMenu.Separator />
+       {props.isCollabEnabled && (
+         <MainMenu.DefaultItems.LiveCollaborationTrigger
+           isCollaborating={props.isCollaborating}
+diff --git a/excalidraw-app/components/R2StorageDialog.tsx b/excalidraw-app/components/R2StorageDialog.tsx
+new file mode 100644
+index 0000000..b02dbc5
+--- /dev/null
++++ b/excalidraw-app/components/R2StorageDialog.tsx
+@@ -0,0 +1,252 @@
++import {
++  CaptureUpdateAction,
++  useExcalidrawAPI,
++} from "@excalidraw/excalidraw";
++import { Dialog } from "@excalidraw/excalidraw/components/Dialog";
++import { FilledButton } from "@excalidraw/excalidraw/components/FilledButton";
++import { TextField } from "@excalidraw/excalidraw/components/TextField";
++import {
++  ExportIcon,
++  LoadIcon,
++  TrashIcon,
++} from "@excalidraw/excalidraw/components/icons";
++import React, { useCallback, useEffect, useState } from "react";
++
++import { atom, useAtom } from "../app-jotai";
++import {
++  deleteDiagram,
++  isValidDiagramName,
++  listDiagrams,
++  loadDiagram,
++  saveDiagram,
++} from "../data/r2Storage";
++
++import type { R2DiagramMeta } from "../data/r2Storage";
++
++export type R2StorageDialogMode = "save" | "open";
++
++export const r2StorageDialogAtom = atom<{
++  isOpen: boolean;
++  mode: R2StorageDialogMode;
++}>({ isOpen: false, mode: "save" });
++
++const fmtDate = (ts: number) =>
++  new Date(ts).toLocaleString(undefined, {
++    dateStyle: "short",
++    timeStyle: "short",
++  });
++
++const rowStyle: React.CSSProperties = {
++  display: "flex",
++  alignItems: "center",
++  gap: "0.5em",
++  padding: "0.35em 0",
++  borderBottom: "1px solid var(--color-border-outline)",
++};
++
++const R2StorageDialogInner = ({
++  mode,
++  onClose,
++}: {
++  mode: R2StorageDialogMode;
++  onClose: () => void;
++}) => {
++  const excalidrawAPI = useExcalidrawAPI();
++  const [name, setName] = useState("");
++  const [diagrams, setDiagrams] = useState<R2DiagramMeta[]>([]);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState("");
++  const [notice, setNotice] = useState("");
++
++  const refresh = useCallback(async () => {
++    try {
++      setDiagrams(await listDiagrams());
++    } catch (err: any) {
++      setError(err.message);
++    }
++  }, []);
++
++  useEffect(() => {
++    setError("");
++    refresh();
++  }, [refresh]);
++
++  const handleSave = async () => {
++    const trimmed = name.trim();
++    if (!isValidDiagramName(trimmed)) {
++      setError(
++        "Diagram name must be 1-100 characters: letters, digits, '.', '_', '-'.",
++      );
++      return;
++    }
++    if (!excalidrawAPI) {
++      return;
++    }
++    setBusy(true);
++    setError("");
++    setNotice("");
++    try {
++      await saveDiagram(
++        trimmed,
++        excalidrawAPI.getSceneElements(),
++        excalidrawAPI.getAppState(),
++        excalidrawAPI.getFiles(),
++      );
++      setNotice(`Saved "${trimmed}" to R2.`);
++      setName("");
++      await refresh();
++    } catch (err: any) {
++      setError(err.message);
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const handleOpen = async (diagram: R2DiagramMeta) => {
++    setBusy(true);
++    setError("");
++    try {
++      const data = await loadDiagram(diagram.name);
++      if (excalidrawAPI) {
++        excalidrawAPI.addFiles(Object.values(data.files));
++        excalidrawAPI.updateScene({
++          elements: data.elements,
++          appState: data.appState,
++          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
++        });
++      }
++      onClose();
++    } catch (err: any) {
++      setError(err.message);
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const handleDelete = async (diagram: R2DiagramMeta) => {
++    if (!window.confirm(`Delete "${diagram.name}" from R2?`)) {
++      return;
++    }
++    setBusy(true);
++    setError("");
++    setNotice("");
++    try {
++      await deleteDiagram(diagram.name);
++      setNotice(`Deleted "${diagram.name}".`);
++      await refresh();
++    } catch (err: any) {
++      setError(err.message);
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <Dialog
++      onCloseRequest={onClose}
++      title="R2 diagram storage"
++      size={550}
++      closeOnClickOutside={!busy}
++    >
++      <div
++        style={{
++          display: "flex",
++          flexDirection: "column",
++          gap: "0.75em",
++          maxHeight: "70vh",
++          overflowY: "auto",
++        }}
++      >
++        <div style={{ display: "flex", gap: "0.5em", alignItems: "flex-end" }}>
++          <div style={{ flex: 1 }}>
++            <TextField
++              label="Diagram name"
++              placeholder="e.g. architecture-overview"
++              value={name}
++              onChange={setName}
++              onKeyDown={(event) => {
++                if (event.key === "Enter") {
++                  handleSave();
++                }
++              }}
++            />
++          </div>
++          <FilledButton
++            label="Save current scene"
++            icon={ExportIcon}
++            size="large"
++            onClick={handleSave}
++          />
++        </div>
++
++        {notice && <div style={{ color: "var(--color-positive)" }}>{notice}</div>}
++        {error && <div style={{ color: "var(--color-danger)" }}>{error}</div>}
++
++        <div>
++          <div style={{ fontWeight: 600, marginBottom: "0.25em" }}>
++            Saved diagrams ({diagrams.length})
++          </div>
++          {diagrams.length === 0 && (
++            <div style={{ color: "var(--color-text-secondary)" }}>
++              No diagrams saved yet. Name a diagram above and save it to R2.
++            </div>
++          )}
++          {diagrams.map((diagram) => (
++            <div key={diagram.name} style={rowStyle}>
++              <span style={{ flex: 1, overflowWrap: "anywhere" }}>
++                {diagram.name}
++              </span>
++              <span
++                style={{
++                  flexShrink: 0,
++                  color: "var(--color-text-secondary)",
++                  fontSize: "0.85em",
++                }}
++              >
++                {fmtDate(diagram.lastModified)}
++              </span>
++              <FilledButton
++                label={`Open ${diagram.name}`}
++                icon={LoadIcon}
++                size="medium"
++                disabled={busy}
++                onClick={() => handleOpen(diagram)}
++              >
++                Open
++              </FilledButton>
++              <FilledButton
++                label={`Delete ${diagram.name}`}
++                icon={TrashIcon}
++                size="medium"
++                variant="outlined"
++                disabled={busy}
++                onClick={() => handleDelete(diagram)}
++              >
++                Delete
++              </FilledButton>
++            </div>
++          ))}
++        </div>
++
++        <div style={{ color: "var(--color-text-secondary)", fontSize: "0.85em" }}>
++          Diagrams are stored in the Cloudflare R2 bucket
++          <code> architechtus-draw-diagrams</code> behind Cloudflare Access.
++          {mode === "save" ? " Saving embeds images into the diagram." : ""}
++        </div>
++      </div>
++    </Dialog>
++  );
++};
++
++export const R2StorageDialog = () => {
++  const [{ isOpen, mode }, setState] = useAtom(r2StorageDialogAtom);
++  if (!isOpen) {
++    return null;
++  }
++  return (
++    <R2StorageDialogInner
++      mode={mode}
++      onClose={() => setState({ isOpen: false, mode })}
++    />
++  );
++};
+\ No newline at end of file
+diff --git a/excalidraw-app/data/r2Storage.ts b/excalidraw-app/data/r2Storage.ts
+new file mode 100644
+index 0000000..ec96d3b
+--- /dev/null
++++ b/excalidraw-app/data/r2Storage.ts
+@@ -0,0 +1,80 @@
++import { MIME_TYPES } from "@excalidraw/common";
++import type { ExcalidrawElement } from "@excalidraw/element/types";
++import { loadFromBlob } from "@excalidraw/excalidraw/data/blob";
++import { serializeAsJSON } from "@excalidraw/excalidraw/data/json";
++import type { RestoredDataState } from "@excalidraw/excalidraw/data/restore";
++import type {
++  AppState,
++  BinaryFiles,
++} from "@excalidraw/excalidraw/types";
++
++export type R2DiagramMeta = {
++  name: string;
++  lastModified: number;
++  size: number;
++};
++
++// Same worker serves both the SPA and this API, so relative URLs are fine and
++// the browser's Cloudflare Access session cookie is sent automatically.
++const API_BASE = "/api/diagrams";
++
++const NAME_PATTERN = /^[a-zA-Z0-9._-]{1,100}$/;
++
++export const isValidDiagramName = (name: string) => NAME_PATTERN.test(name.trim());
++
++const ensureOk = async (response: Response) => {
++  if (response.ok) {
++    return response;
++  }
++  let message = `R2 storage request failed (${response.status})`;
++  try {
++    const data = await response.json();
++    if (data?.error) {
++      message = data.error;
++    }
++  } catch {
++    // keep the default message
++  }
++  throw new Error(message);
++};
++
++export const listDiagrams = async (): Promise<R2DiagramMeta[]> => {
++  const response = await ensureOk(await fetch(`${API_BASE}`));
++  return response.json();
++};
++
++export const saveDiagram = async (
++  name: string,
++  elements: readonly ExcalidrawElement[],
++  appState: Partial<AppState>,
++  files: BinaryFiles,
++): Promise<void> => {
++  // "local" serialization embeds the image files as data URLs, so a single
++  // R2 object holds the whole diagram (no separate file handling needed).
++  const json = serializeAsJSON(elements, appState, files, "local");
++  await ensureOk(
++    await fetch(`${API_BASE}/${encodeURIComponent(name.trim())}`, {
++      method: "PUT",
++      headers: { "Content-Type": MIME_TYPES.excalidraw },
++      body: json,
++    }),
++  );
++};
++
++export const loadDiagram = async (name: string): Promise<RestoredDataState> => {
++  const response = await ensureOk(
++    await fetch(`${API_BASE}/${encodeURIComponent(name)}`),
++  );
++  const blob = new Blob([await response.text()], {
++    type: MIME_TYPES.excalidraw,
++  });
++  return loadFromBlob(blob, null, null);
++};
++
++export const deleteDiagram = async (name: string): Promise<void> => {
++  await ensureOk(
++    await fetch(`${API_BASE}/${encodeURIComponent(name)}`, {
++      method: "DELETE",
++    }),
++  );
++};
+\ No newline at end of file

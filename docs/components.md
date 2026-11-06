@@ -9,10 +9,15 @@ Everything that makes up `architechtus-draw`, explained field by field.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "architechtus-draw",
   "compatibility_date": "2026-02-24",
+  "main": "./src/worker.ts",
   "assets": {
     "directory": "./build",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
+  "r2_buckets": [
+    { "binding": "DIAGRAMS", "bucket_name": "architechtus-draw-diagrams" }
+  ],
   "routes": [{ "pattern": "draw.architechtus.eu", "custom_domain": true }],
   "workers_dev": false
 }
@@ -22,17 +27,37 @@ Everything that makes up `architechtus-draw`, explained field by field.
 | --- | --- | --- |
 | `name` | `architechtus-draw` | Worker name; also the project name in the dashboard |
 | `compatibility_date` | `2026-02-24` | Workers runtime compat date (same as `architechtus-blog`) |
-| `assets.directory` | `./build` | Serves this folder as static content; **no `main` worker script** → assets-only worker |
+| `main` | `./src/worker.ts` | A real worker script: routes `/api/diagrams*` to the R2 API and everything else to the assets binding |
+| `assets.directory` | `./build` | Serves this folder as static content through the binding |
+| `assets.binding` | `ASSETS` | The worker calls `env.ASSETS.fetch(request)` to serve the SPA (required once `main` exists) |
 | `assets.not_found_handling` | `single-page-application` | Any unknown path returns `index.html` instead of 404 (deep links / hash-less paths work) |
+| `r2_buckets` | `DIAGRAMS → architechtus-draw-diagrams` | R2 bucket for saved diagrams, exposed to the worker as `env.DIAGRAMS` |
 | `routes` | `[{ pattern: "draw.architechtus.eu", custom_domain: true }]` | Registers a Workers **custom domain**; wrangler auto-creates the DNS record + certificate on deploy |
 | `workers_dev` | `false` | Do **not** create a `*.workers.dev` route. The Access-protected custom domain is the only ingress |
 
 Notes:
 
-- An assets-only worker must **not** declare `"binding"` on `assets` (wrangler errors:
-  "Cannot use assets with a binding in an assets-only Worker").
-- There is intentionally no `main`, no `d1_databases`, no `r2_buckets`, no triggers —
-  nothing server-side runs.
+- Once `main` is present, the assets config **must** declare `binding` (wrangler errors
+  otherwise). The binding still honors `not_found_handling`, so `env.ASSETS.fetch`
+  returns `index.html` for unknown paths.
+- The R2 bucket is created once with `npx wrangler r2 bucket create
+  architechtus-draw-diagrams`; the binding is declarative and needs no other setup.
+
+## `src/worker.ts`
+
+The worker that fronts the app:
+
+- `GET /api/diagrams` → lists objects (name / lastModified / size), newest first,
+  paginating through the whole bucket.
+- `PUT /api/diagrams/<name>` → stores the request body as an R2 object (25 MiB cap,
+  `413 RequestTooLargeError` above it; name validated against
+  `^[a-zA-Z0-9._-]{1,100}$`).
+- `GET /api/diagrams/<name>` → returns the stored object (`404` if missing).
+- `DELETE /api/diagrams/<name>` → deletes the object.
+- Everything else → `env.ASSETS.fetch(request)` (SPA + static files + fallback).
+
+Because the API is same-origin, the browser's Access session cookie authenticates these
+requests automatically. No CORS is needed.
 
 ## `build.sh`
 
@@ -43,9 +68,33 @@ Notes:
 | --- | --- |
 | `EXCALIDRAW_COMMIT` | Pinned upstream commit (`701b901a0f1ba3d0b390d9cdf63d112e25abac4b`) for reproducibility |
 | `SRC_DIR` | Where the source clone lives (`$EXCALIDRAW_SRC`, default `/workspace/excalidraw`); clones shallow if missing, checks out the pinned commit otherwise |
+| patch | Applies `patch/excalidraw-app-r2-storage.patch` (idempotent: skipped if already applied, hard error if it won't apply) |
 | `yarn --frozen-lockfile` | Installs the monorepo deps exactly as locked |
 | `vite build` | Runs the docker-equivalent build from `excalidraw-app/` with the env overrides below |
 | copy | Replaces `./build` with `excalidraw-app/build` |
+
+## `patch/excalidraw-app-r2-storage.patch`
+
+Adds the **Save to R2… / Open from R2…** feature to the upstream app. It touches four
+files in `excalidraw-app/`:
+
+| File | Change |
+| --- | --- |
+| `data/r2Storage.ts` (new) | API client for `/api/diagrams`: `listDiagrams`, `saveDiagram` (serializes with `serializeAsJSON(..., "local")` so images embed as data URLs), `loadDiagram` (reuses `loadFromBlob`), `deleteDiagram` |
+| `components/R2StorageDialog.tsx` (new) | The save/open/delete dialog; uses `useExcalidrawAPI` to read the scene and `updateScene`/`addFiles` to restore one |
+| `components/AppMainMenu.tsx` | Two `MainMenu.Item` entries that open the dialog |
+| `App.tsx` | Imports and renders `<R2StorageDialog />` |
+
+Regenerating the patch after editing the source:
+
+```bash
+cd $EXCALIDRAW_SRC            # /workspace/excalidraw, patched working tree
+git add -N excalidraw-app/data/r2Storage.ts excalidraw-app/components/R2StorageDialog.tsx
+git diff -- excalidraw-app > ../architechtus-draw/patch/excalidraw-app-r2-storage.patch
+```
+
+Keep the patch in sync when bumping `EXCALIDRAW_COMMIT`; `build.sh` will fail loudly if
+it stops applying cleanly.
 
 ### Build-time environment overrides
 
@@ -145,14 +194,16 @@ include:  email in (mmajunke@cloudflare.com, mike.majunke@gmail.com, mike.majunk
 ## Repo layout
 
 ```
-wrangler.jsonc  # worker + custom domain config
-build.sh        # reproducible bundle build (pinned excalidraw commit)
+wrangler.jsonc  # worker config: main + ASSETS binding + R2 binding, custom domain route
+src/worker.ts   # worker: /api/diagrams R2 REST API + ASSETS fallback for the SPA
+patch/          # excalidraw-app-r2-storage.patch (Save to R2…/Open from R2… feature)
+build.sh        # reproducible bundle build (pinned excalidraw commit + patch apply)
 README.md       # quick overview
 docs/           # this documentation
-  architecture.md  # system diagram, request flow, component inventory
+  architecture.md  # system diagram, request flow, build pipeline, component inventory
   setup.md         # from-scratch build/deploy/Access/verify
   components.md    # this file
-  operations.md    # day-2 tasks: updates, Access changes, troubleshooting
+  operations.md    # day-2 tasks: updates, Access changes, service tokens, R2, troubleshooting
   security.md      # threat model, ingress, data-exfiltration checks
 LICENSE         # Excalidraw is MIT; attribution + license text
 .gitignore      # ignores build/, node_modules/, .wrangler/

@@ -30,10 +30,12 @@ What it does (see [components.md](./components.md#buildsh) for details):
 
 1. Ensures a clone of `excalidraw/excalidraw` exists at `$EXCALIDRAW_SRC`
    (default `/workspace/excalidraw`) pinned to commit `701b901a`.
-2. Runs `yarn --frozen-lockfile` in the monorepo.
-3. Runs the official Docker-equivalent build (`yarn build:app:docker`) with the
+2. Applies `patch/excalidraw-app-r2-storage.patch` (the Save/Open-to-R2 feature;
+   idempotent — skipped if already applied).
+3. Runs `yarn --frozen-lockfile` in the monorepo.
+4. Runs the official Docker-equivalent build (`yarn build:app:docker`) with the
    excalidraw.com data endpoints disabled via environment overrides.
-4. Copies `excalidraw-app/build` into `./build` (38 MB, ~532 files) in this repo.
+5. Copies `excalidraw-app/build` into `./build` (38 MB, ~532 files) in this repo.
 
 Environment knobs:
 
@@ -45,6 +47,15 @@ Environment knobs:
 
 ## Step 2 — Deploy the worker
 
+The worker binds two resources: static assets (`./build`) and an R2 bucket for saved
+diagrams. Create the bucket once (wrangler errors if it already exists):
+
+```bash
+npx wrangler@4.157.0 r2 bucket create architechtus-draw-diagrams
+```
+
+Then deploy:
+
 ```bash
 cd /workspace/architechtus-draw   # or wherever you cloned this repo
 npx wrangler@4.157.0 deploy
@@ -52,7 +63,8 @@ npx wrangler@4.157.0 deploy
 
 Expected outcome:
 
-- 532 assets uploaded to Workers Static Assets.
+- The worker (`src/worker.ts`) is uploaded with bindings `env.ASSETS` (static assets)
+  and `env.DIAGRAMS` (R2 bucket `architechtus-draw-diagrams`).
 - A **custom domain** `draw.architechtus.eu` is created and Cloudflare auto-provisions
   the DNS record and TLS certificate (first-time provisioning can take a minute).
 
@@ -131,9 +143,19 @@ curl -sS -o /dev/null -w "%{http_code}\n" \
   https://draw.architechtus.eu/
 #    expect: 200
 
+# 3b. The R2 diagram API is reachable and works (with the same token)
+curl -sS -H "CF-Access-Client-Id: <client_id>" -H "CF-Access-Client-Secret: <client_secret>" \
+  https://draw.architechtus.eu/api/diagrams
+#    expect: [] (empty list)
+#    (optionally: PUT /api/diagrams/test, GET it back, DELETE it — see architecture.md)
+
 # 4. No public workers.dev URL (workers_dev: false)
 curl -sS -o /dev/null -w "%{http_code}\n" https://architechtus-draw.<subdomain>.workers.dev/
 #    expect: 404 (error 1042)
+
+# 5. /api/* is equally protected by Access (no token, no cookie → 302)
+curl -sS -o /dev/null -w "%{http_code} -> %{redirect_url}\n" https://draw.architechtus.eu/api/diagrams
+#    expect: 302 -> Access login
 ```
 
 ## Reproducing from a fresh clone
