@@ -1,0 +1,14 @@
+{
+	// Self-hosted Excalidraw whiteboard, served as a static SPA on Workers Static Assets.
+	// Ingress is ONLY the custom domain draw.architechtus.eu, which sits behind Cloudflare Access.
+	// workers_dev is false so no publicly reachable *.workers.dev URL is ever created.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "architechtus-draw",
+	"compatibility_date": "2026-02-24",
+	"assets": {
+		"directory": "./build",
+		"not_found_handling": "single-page-application"
+	},
+	"routes": [{ "pattern": "draw.architechtus.eu", "custom_domain": true }],
+	"workers_dev": false
+}
